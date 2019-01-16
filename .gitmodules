@@ -1,0 +1,6 @@
+[submodule "benchmarks/FlameGraph"]
+	path = benchmarks/FlameGraph
+	url = https://github.com/brendangregg/FlameGraph
+[submodule "benchmarks/ipc-bench"]
+	path = benchmarks/ipc-bench
+	url = https://github.com/rhiswell/ipc-bench

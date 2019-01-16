@@ -1557,7 +1557,7 @@ Refs:
 
 perf 的原理是这样：每隔一个固定的时间，就在 CPU 上（每个核上都有）产生一个中断，在中断上看看，当前是哪个 pid，哪个函数，然后给对应的 pid 和函数加上一个统计值，这样，我们就知道 CPU 在百分几的时间在某个 PID，或者某个函数上了。这个原理图示如下：
 
-![img](/home/rh/Documents/fsocket/assets/perf_principles.png)
+![img](./assets/perf_principles.png)
 
 很明显可以看出，这是一种采样的模式，我们预期，运行时间越多的函数，被时钟中断击中的机会越大，从而推测，那个函数（或者 PID 等）的 CPU 产用率就越高。
 
