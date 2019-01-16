@@ -2,7 +2,8 @@
 *.out
 *.tgz
 *.perf
-perf.data*
+*.data
+*.old
 out.*
 oprofile_data/
 sysstat/
