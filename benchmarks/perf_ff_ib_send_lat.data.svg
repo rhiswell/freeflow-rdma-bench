@@ -1,0 +1,1534 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="566" onload="init(evt)" viewBox="0 0 1200 566" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="566.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="549" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="549" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpuidle_enter (6 samples, 0.04%)</title><rect x="1189.2" y="389" width="0.4" height="15.0" fill="rgb(246,197,17)" rx="2" ry="2" />
+<text text-anchor="" x="1192.16" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock (14 samples, 0.09%)</title><rect x="496.0" y="389" width="1.1" height="15.0" fill="rgb(205,168,0)" rx="2" ry="2" />
+<text text-anchor="" x="499.02" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (2 samples, 0.01%)</title><rect x="70.2" y="197" width="0.2" height="15.0" fill="rgb(235,200,21)" rx="2" ry="2" />
+<text text-anchor="" x="73.23" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (2 samples, 0.01%)</title><rect x="68.9" y="37" width="0.2" height="15.0" fill="rgb(226,1,28)" rx="2" ry="2" />
+<text text-anchor="" x="71.94" y="47.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (4 samples, 0.03%)</title><rect x="493.9" y="389" width="0.3" height="15.0" fill="rgb(242,119,10)" rx="2" ry="2" />
+<text text-anchor="" x="496.89" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (535 samples, 3.44%)</title><rect x="547.5" y="389" width="40.7" height="15.0" fill="rgb(235,160,49)" rx="2" ry="2" />
+<text text-anchor="" x="550.52" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >req..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_iter_lat_send (6,896 samples, 44.39%)</title><rect x="72.6" y="437" width="523.8" height="15.0" fill="rgb(212,79,23)" rx="2" ry="2" />
+<text text-anchor="" x="75.58" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run_iter_lat_send</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__perf_event_enable (2 samples, 0.01%)</title><rect x="794.1" y="293" width="0.1" height="15.0" fill="rgb(238,29,39)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_cq (9 samples, 0.06%)</title><rect x="1162.9" y="485" width="0.7" height="15.0" fill="rgb(229,168,2)" rx="2" ry="2" />
+<text text-anchor="" x="1165.88" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_startup_entry (30 samples, 0.19%)</title><rect x="1186.9" y="469" width="2.3" height="15.0" fill="rgb(236,14,42)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (20 samples, 0.13%)</title><rect x="67.7" y="69" width="1.5" height="15.0" fill="rgb(250,46,16)" rx="2" ry="2" />
+<text text-anchor="" x="70.72" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock (51 samples, 0.33%)</title><rect x="497.1" y="389" width="3.9" height="15.0" fill="rgb(211,175,12)" rx="2" ry="2" />
+<text text-anchor="" x="500.08" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_cq (3,316 samples, 21.34%)</title><rect x="234.2" y="405" width="251.9" height="15.0" fill="rgb(213,59,54)" rx="2" ry="2" />
+<text text-anchor="" x="237.21" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mlx4_poll_cq</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__GI___ioctl (5 samples, 0.03%)</title><rect x="794.0" y="469" width="0.4" height="15.0" fill="rgb(236,15,24)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__tick_nohz_idle_enter (2 samples, 0.01%)</title><rect x="1188.8" y="437" width="0.1" height="15.0" fill="rgb(224,78,6)" rx="2" ry="2" />
+<text text-anchor="" x="1191.78" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (2 samples, 0.01%)</title><rect x="1187.1" y="389" width="0.2" height="15.0" fill="rgb(239,162,9)" rx="2" ry="2" />
+<text text-anchor="" x="1190.11" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>group_sched_in (7 samples, 0.05%)</title><rect x="1187.3" y="325" width="0.5" height="15.0" fill="rgb(246,162,46)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.goexit (3 samples, 0.02%)</title><rect x="10.3" y="485" width="0.2" height="15.0" fill="rgb(225,97,38)" rx="2" ry="2" />
+<text text-anchor="" x="13.30" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__intel_pmu_enable_all.isra.9 (2 samples, 0.01%)</title><rect x="1189.2" y="197" width="0.2" height="15.0" fill="rgb(231,53,0)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_kernel (6 samples, 0.04%)</title><rect x="1189.2" y="485" width="0.4" height="15.0" fill="rgb(218,114,52)" rx="2" ry="2" />
+<text text-anchor="" x="1192.16" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (93 samples, 0.60%)</title><rect x="63.7" y="229" width="7.1" height="15.0" fill="rgb(206,104,19)" rx="2" ry="2" />
+<text text-anchor="" x="66.70" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (3 samples, 0.02%)</title><rect x="61.0" y="405" width="0.3" height="15.0" fill="rgb(244,155,22)" rx="2" ry="2" />
+<text text-anchor="" x="64.04" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (391 samples, 2.52%)</title><rect x="501.0" y="389" width="29.7" height="15.0" fill="rgb(207,202,17)" rx="2" ry="2" />
+<text text-anchor="" x="503.96" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >re..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_unlock (3 samples, 0.02%)</title><rect x="1185.2" y="485" width="0.2" height="15.0" fill="rgb(210,6,41)" rx="2" ry="2" />
+<text text-anchor="" x="1188.21" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (149 samples, 0.96%)</title><rect x="61.3" y="405" width="11.3" height="15.0" fill="rgb(245,62,24)" rx="2" ry="2" />
+<text text-anchor="" x="64.27" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ixgbe_service_event_schedule (2 samples, 0.01%)</title><rect x="1187.0" y="309" width="0.1" height="15.0" fill="rgb(206,137,16)" rx="2" ry="2" />
+<text text-anchor="" x="1189.96" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (7 samples, 0.05%)</title><rect x="541.8" y="389" width="0.6" height="15.0" fill="rgb(211,226,37)" rx="2" ry="2" />
+<text text-anchor="" x="544.82" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock@plt (45 samples, 0.29%)</title><rect x="1165.9" y="485" width="3.4" height="15.0" fill="rgb(230,72,7)" rx="2" ry="2" />
+<text text-anchor="" x="1168.92" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpuidle_enter_state (3 samples, 0.02%)</title><rect x="1189.4" y="373" width="0.2" height="15.0" fill="rgb(251,165,7)" rx="2" ry="2" />
+<text text-anchor="" x="1192.39" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpuidle_enter (20 samples, 0.13%)</title><rect x="1186.9" y="437" width="1.5" height="15.0" fill="rgb(254,215,19)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (144 samples, 0.93%)</title><rect x="61.4" y="389" width="11.0" height="15.0" fill="rgb(254,54,0)" rx="2" ry="2" />
+<text text-anchor="" x="64.42" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (43 samples, 0.28%)</title><rect x="66.2" y="133" width="3.3" height="15.0" fill="rgb(212,207,4)" rx="2" ry="2" />
+<text text-anchor="" x="69.20" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__perf_event_enable (2 samples, 0.01%)</title><rect x="1189.2" y="293" width="0.2" height="15.0" fill="rgb(207,152,31)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (4 samples, 0.03%)</title><rect x="495.6" y="373" width="0.3" height="15.0" fill="rgb(231,129,15)" rx="2" ry="2" />
+<text text-anchor="" x="498.64" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf (8 samples, 0.05%)</title><rect x="793.9" y="501" width="0.6" height="15.0" fill="rgb(222,83,14)" rx="2" ry="2" />
+<text text-anchor="" x="796.91" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__alloc_pages_nodemask (4 samples, 0.03%)</title><rect x="57.2" y="325" width="0.3" height="15.0" fill="rgb(215,103,29)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (3 samples, 0.02%)</title><rect x="774.2" y="437" width="0.3" height="15.0" fill="rgb(251,211,10)" rx="2" ry="2" />
+<text text-anchor="" x="777.24" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>generic_smp_call_function_single_interrupt (2 samples, 0.01%)</title><rect x="1189.2" y="341" width="0.2" height="15.0" fill="rgb(254,109,12)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>github.com/containerd/containerd/vendor/google.golang.org/grpc.(*Server).handleStream (2 samples, 0.01%)</title><rect x="10.4" y="453" width="0.1" height="15.0" fill="rgb(223,152,46)" rx="2" ry="2" />
+<text text-anchor="" x="13.38" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>flush_smp_call_function_queue (2 samples, 0.01%)</title><rect x="1189.2" y="325" width="0.2" height="15.0" fill="rgb(226,78,11)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_iter_lat_send (96 samples, 0.62%)</title><rect x="49.7" y="469" width="7.3" height="15.0" fill="rgb(238,28,43)" rx="2" ry="2" />
+<text text-anchor="" x="52.72" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (5 samples, 0.03%)</title><rect x="1186.9" y="421" width="0.4" height="15.0" fill="rgb(212,13,48)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_enable (2 samples, 0.01%)</title><rect x="1189.2" y="229" width="0.2" height="15.0" fill="rgb(246,208,29)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_sw_cqe (61 samples, 0.39%)</title><rect x="951.3" y="421" width="4.6" height="15.0" fill="rgb(215,111,35)" rx="2" ry="2" />
+<text text-anchor="" x="954.28" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>flush_smp_call_function_queue (7 samples, 0.05%)</title><rect x="1187.3" y="373" width="0.5" height="15.0" fill="rgb(243,122,32)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock (28 samples, 0.18%)</title><rect x="1163.8" y="485" width="2.1" height="15.0" fill="rgb(239,70,45)" rx="2" ry="2" />
+<text text-anchor="" x="1166.80" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (6 samples, 0.04%)</title><rect x="495.5" y="389" width="0.4" height="15.0" fill="rgb(240,70,30)" rx="2" ry="2" />
+<text text-anchor="" x="498.49" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle_mm_fault (5 samples, 0.03%)</title><rect x="57.2" y="357" width="0.3" height="15.0" fill="rgb(251,30,12)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock (46 samples, 0.30%)</title><rect x="544.0" y="389" width="3.5" height="15.0" fill="rgb(218,195,49)" rx="2" ry="2" />
+<text text-anchor="" x="547.02" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (26 samples, 0.17%)</title><rect x="67.3" y="85" width="2.0" height="15.0" fill="rgb(205,145,13)" rx="2" ry="2" />
+<text text-anchor="" x="70.34" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_commit_txn (2 samples, 0.01%)</title><rect x="1189.2" y="261" width="0.2" height="15.0" fill="rgb(254,73,42)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>poll_idle (2 samples, 0.01%)</title><rect x="1189.5" y="357" width="0.1" height="15.0" fill="rgb(206,154,20)" rx="2" ry="2" />
+<text text-anchor="" x="1192.47" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock (60 samples, 0.39%)</title><rect x="530.7" y="405" width="4.5" height="15.0" fill="rgb(252,64,47)" rx="2" ry="2" />
+<text text-anchor="" x="533.66" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_sched_clock (5 samples, 0.03%)</title><rect x="1185.4" y="485" width="0.4" height="15.0" fill="rgb(221,139,42)" rx="2" ry="2" />
+<text text-anchor="" x="1188.44" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_ibv_cq (5 samples, 0.03%)</title><rect x="956.4" y="437" width="0.4" height="15.0" fill="rgb(215,173,41)" rx="2" ry="2" />
+<text text-anchor="" x="959.45" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>generic_exec_single (2 samples, 0.01%)</title><rect x="794.1" y="325" width="0.1" height="15.0" fill="rgb(244,53,15)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (121 samples, 0.78%)</title><rect x="62.4" y="309" width="9.2" height="15.0" fill="rgb(221,51,20)" rx="2" ry="2" />
+<text text-anchor="" x="65.41" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (3 samples, 0.02%)</title><rect x="1189.8" y="469" width="0.2" height="15.0" fill="rgb(235,218,37)" rx="2" ry="2" />
+<text text-anchor="" x="1192.77" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reflect.Value.Call (2 samples, 0.01%)</title><rect x="10.5" y="389" width="0.2" height="15.0" fill="rgb(216,224,25)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>wake_up_process (2 samples, 0.01%)</title><rect x="1187.1" y="325" width="0.2" height="15.0" fill="rgb(237,180,1)" rx="2" ry="2" />
+<text text-anchor="" x="1190.11" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (15,536 samples, 100%)</title><rect x="10.0" y="517" width="1180.0" height="15.0" fill="rgb(250,142,18)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="527.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (134 samples, 0.86%)</title><rect x="61.9" y="357" width="10.2" height="15.0" fill="rgb(207,155,12)" rx="2" ry="2" />
+<text text-anchor="" x="64.88" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZNSo6sentryC2ERSo (39 samples, 0.25%)</title><rect x="832.3" y="469" width="3.0" height="15.0" fill="rgb(241,205,30)" rx="2" ry="2" />
+<text text-anchor="" x="835.34" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (3 samples, 0.02%)</title><rect x="69.9" y="149" width="0.2" height="15.0" fill="rgb(207,11,21)" rx="2" ry="2" />
+<text text-anchor="" x="72.85" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_enable (7 samples, 0.05%)</title><rect x="1187.3" y="277" width="0.5" height="15.0" fill="rgb(210,194,18)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>generic_smp_call_function_single_interrupt (7 samples, 0.05%)</title><rect x="1187.3" y="389" width="0.5" height="15.0" fill="rgb(239,48,39)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_pmu_enable_all (2 samples, 0.01%)</title><rect x="794.1" y="213" width="0.1" height="15.0" fill="rgb(221,226,38)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_post_send (803 samples, 5.17%)</title><rect x="535.4" y="421" width="61.0" height="15.0" fill="rgb(225,32,50)" rx="2" ry="2" />
+<text text-anchor="" x="538.36" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mlx4_p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_find_qp (7 samples, 0.05%)</title><rect x="955.9" y="421" width="0.5" height="15.0" fill="rgb(251,211,4)" rx="2" ry="2" />
+<text text-anchor="" x="958.91" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ibv_cmd_post_send (2 samples, 0.01%)</title><rect x="603.8" y="485" width="0.1" height="15.0" fill="rgb(236,118,25)" rx="2" ry="2" />
+<text text-anchor="" x="606.80" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZN9__gnu_cxx18stdio_sync_filebufIcSt11char_traitsIcEE6xsputnEPKcl (14 samples, 0.09%)</title><rect x="830.4" y="469" width="1.1" height="15.0" fill="rgb(216,184,24)" rx="2" ry="2" />
+<text text-anchor="" x="833.44" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>github.com/opencontainers/runc/vendor/github.com/urfave/cli.HandleAction (2 samples, 0.01%)</title><rect x="10.5" y="405" width="0.2" height="15.0" fill="rgb(233,24,26)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_enable (2 samples, 0.01%)</title><rect x="794.1" y="229" width="0.1" height="15.0" fill="rgb(235,171,21)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>qsort_r (149 samples, 0.96%)</title><rect x="61.3" y="421" width="11.3" height="15.0" fill="rgb(235,31,54)" rx="2" ry="2" />
+<text text-anchor="" x="64.27" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>scheduler_tick (2 samples, 0.01%)</title><rect x="774.3" y="341" width="0.2" height="15.0" fill="rgb(244,85,25)" rx="2" ry="2" />
+<text text-anchor="" x="777.31" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>alloc_pages_vma (4 samples, 0.03%)</title><rect x="57.2" y="341" width="0.3" height="15.0" fill="rgb(208,116,40)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gcDrain (3 samples, 0.02%)</title><rect x="11.4" y="453" width="0.3" height="15.0" fill="rgb(251,55,7)" rx="2" ry="2" />
+<text text-anchor="" x="14.44" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (2 samples, 0.01%)</title><rect x="1058.5" y="421" width="0.1" height="15.0" fill="rgb(242,73,2)" rx="2" ry="2" />
+<text text-anchor="" x="1061.45" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main (7,099 samples, 45.69%)</title><rect x="57.2" y="453" width="539.2" height="15.0" fill="rgb(215,52,26)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>fwrite@plt (10 samples, 0.06%)</title><rect x="835.3" y="469" width="0.8" height="15.0" fill="rgb(220,69,50)" rx="2" ry="2" />
+<text text-anchor="" x="838.30" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock@plt (2 samples, 0.01%)</title><rect x="48.8" y="469" width="0.2" height="15.0" fill="rgb(238,119,0)" rx="2" ry="2" />
+<text text-anchor="" x="51.81" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>alloc_ctx (5 samples, 0.03%)</title><rect x="57.2" y="437" width="0.3" height="15.0" fill="rgb(247,107,38)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (11 samples, 0.07%)</title><rect x="596.4" y="485" width="0.8" height="15.0" fill="rgb(247,16,21)" rx="2" ry="2" />
+<text text-anchor="" x="599.35" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_IO_fwrite (63 samples, 0.41%)</title><rect x="805.1" y="485" width="4.8" height="15.0" fill="rgb(210,70,13)" rx="2" ry="2" />
+<text text-anchor="" x="808.07" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>try_to_wake_up (2 samples, 0.01%)</title><rect x="1187.1" y="309" width="0.2" height="15.0" fill="rgb(216,61,45)" rx="2" ry="2" />
+<text text-anchor="" x="1190.11" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (3 samples, 0.02%)</title><rect x="71.6" y="309" width="0.2" height="15.0" fill="rgb(205,50,26)" rx="2" ry="2" />
+<text text-anchor="" x="74.60" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_timer_softirq (2 samples, 0.01%)</title><rect x="1187.0" y="357" width="0.1" height="15.0" fill="rgb(234,80,43)" rx="2" ry="2" />
+<text text-anchor="" x="1189.96" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock (42 samples, 0.27%)</title><rect x="801.7" y="469" width="3.1" height="15.0" fill="rgb(215,78,1)" rx="2" ry="2" />
+<text text-anchor="" x="804.65" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[perf] (7 samples, 0.05%)</title><rect x="793.9" y="485" width="0.5" height="15.0" fill="rgb(217,121,40)" rx="2" ry="2" />
+<text text-anchor="" x="796.91" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>update_process_times (2 samples, 0.01%)</title><rect x="774.3" y="357" width="0.2" height="15.0" fill="rgb(248,144,25)" rx="2" ry="2" />
+<text text-anchor="" x="777.31" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (2 samples, 0.01%)</title><rect x="794.2" y="453" width="0.2" height="15.0" fill="rgb(223,103,46)" rx="2" ry="2" />
+<text text-anchor="" x="797.21" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_sw_cqe (3 samples, 0.02%)</title><rect x="1162.7" y="485" width="0.2" height="15.0" fill="rgb(245,111,5)" rx="2" ry="2" />
+<text text-anchor="" x="1165.66" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (2 samples, 0.01%)</title><rect x="69.1" y="53" width="0.1" height="15.0" fill="rgb(252,94,6)" rx="2" ry="2" />
+<text text-anchor="" x="72.09" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (96 samples, 0.62%)</title><rect x="63.5" y="245" width="7.3" height="15.0" fill="rgb(206,122,27)" rx="2" ry="2" />
+<text text-anchor="" x="66.55" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>github.com/opencontainers/runc/vendor/github.com/urfave/cli.Command.Run (2 samples, 0.01%)</title><rect x="10.5" y="421" width="0.2" height="15.0" fill="rgb(223,36,19)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_call_function_single_interrupt (2 samples, 0.01%)</title><rect x="1189.2" y="357" width="0.2" height="15.0" fill="rgb(228,48,14)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_cq (8 samples, 0.05%)</title><rect x="800.4" y="469" width="0.6" height="15.0" fill="rgb(218,4,43)" rx="2" ry="2" />
+<text text-anchor="" x="803.44" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_call_function_single (3 samples, 0.02%)</title><rect x="794.0" y="341" width="0.2" height="15.0" fill="rgb(241,197,35)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (3 samples, 0.02%)</title><rect x="11.1" y="469" width="0.3" height="15.0" fill="rgb(221,16,12)" rx="2" ry="2" />
+<text text-anchor="" x="14.14" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 0.01%)</title><rect x="1188.6" y="437" width="0.2" height="15.0" fill="rgb(216,159,44)" rx="2" ry="2" />
+<text text-anchor="" x="1191.63" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (126 samples, 0.81%)</title><rect x="62.3" y="325" width="9.5" height="15.0" fill="rgb(215,75,22)" rx="2" ry="2" />
+<text text-anchor="" x="65.26" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>irq/116-nvidia (3 samples, 0.02%)</title><rect x="793.5" y="501" width="0.3" height="15.0" fill="rgb(238,29,28)" rx="2" ry="2" />
+<text text-anchor="" x="796.53" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>getenv (7 samples, 0.05%)</title><rect x="542.7" y="389" width="0.6" height="15.0" fill="rgb(212,222,47)" rx="2" ry="2" />
+<text text-anchor="" x="545.73" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__do_page_fault (5 samples, 0.03%)</title><rect x="57.2" y="373" width="0.3" height="15.0" fill="rgb(223,121,30)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>group_sched_in (2 samples, 0.01%)</title><rect x="1189.2" y="277" width="0.2" height="15.0" fill="rgb(237,193,27)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (3 samples, 0.02%)</title><rect x="1189.8" y="453" width="0.2" height="15.0" fill="rgb(209,23,20)" rx="2" ry="2" />
+<text text-anchor="" x="1192.77" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__libc_start_main (7,099 samples, 45.69%)</title><rect x="57.2" y="469" width="539.2" height="15.0" fill="rgb(224,100,50)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__libc_start_main</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>queue_work_on (2 samples, 0.01%)</title><rect x="1187.0" y="293" width="0.1" height="15.0" fill="rgb(220,10,50)" rx="2" ry="2" />
+<text text-anchor="" x="1189.96" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZNSo6sentryC1ERSo@plt (11 samples, 0.07%)</title><rect x="831.5" y="469" width="0.8" height="15.0" fill="rgb(222,200,23)" rx="2" ry="2" />
+<text text-anchor="" x="834.50" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock (37 samples, 0.24%)</title><rect x="1169.3" y="485" width="2.9" height="15.0" fill="rgb(227,151,47)" rx="2" ry="2" />
+<text text-anchor="" x="1172.34" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (2 samples, 0.01%)</title><rect x="11.2" y="437" width="0.2" height="15.0" fill="rgb(227,17,18)" rx="2" ry="2" />
+<text text-anchor="" x="14.22" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tick_sched_timer (3 samples, 0.02%)</title><rect x="774.2" y="389" width="0.3" height="15.0" fill="rgb(231,170,39)" rx="2" ry="2" />
+<text text-anchor="" x="777.24" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>github.com/opencontainers/runc/vendor/github.com/urfave/cli.(*App).Run (2 samples, 0.01%)</title><rect x="10.5" y="437" width="0.2" height="15.0" fill="rgb(220,150,19)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.futex (3 samples, 0.02%)</title><rect x="11.1" y="485" width="0.3" height="15.0" fill="rgb(250,159,6)" rx="2" ry="2" />
+<text text-anchor="" x="14.14" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>post_send_rc_uc (15 samples, 0.10%)</title><rect x="959.4" y="421" width="1.1" height="15.0" fill="rgb(220,86,47)" rx="2" ry="2" />
+<text text-anchor="" x="962.41" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_secondary (30 samples, 0.19%)</title><rect x="1186.9" y="485" width="2.3" height="15.0" fill="rgb(225,178,4)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (2 samples, 0.01%)</title><rect x="72.4" y="373" width="0.2" height="15.0" fill="rgb(232,36,30)" rx="2" ry="2" />
+<text text-anchor="" x="75.43" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_kernel (6 samples, 0.04%)</title><rect x="1189.2" y="453" width="0.4" height="15.0" fill="rgb(219,173,34)" rx="2" ry="2" />
+<text text-anchor="" x="1192.16" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (3 samples, 0.02%)</title><rect x="11.4" y="485" width="0.3" height="15.0" fill="rgb(227,171,49)" rx="2" ry="2" />
+<text text-anchor="" x="14.44" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (37 samples, 0.24%)</title><rect x="66.6" y="117" width="2.8" height="15.0" fill="rgb(228,168,18)" rx="2" ry="2" />
+<text text-anchor="" x="69.58" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (5 samples, 0.03%)</title><rect x="69.5" y="133" width="0.4" height="15.0" fill="rgb(244,184,44)" rx="2" ry="2" />
+<text text-anchor="" x="72.47" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock@plt (95 samples, 0.61%)</title><rect x="774.5" y="485" width="7.2" height="15.0" fill="rgb(240,13,2)" rx="2" ry="2" />
+<text text-anchor="" x="777.46" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (4 samples, 0.03%)</title><rect x="774.2" y="453" width="0.3" height="15.0" fill="rgb(240,137,28)" rx="2" ry="2" />
+<text text-anchor="" x="777.16" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tick_nohz_idle_enter (2 samples, 0.01%)</title><rect x="1188.8" y="453" width="0.1" height="15.0" fill="rgb(218,74,52)" rx="2" ry="2" />
+<text text-anchor="" x="1191.78" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__do_page_fault (2 samples, 0.01%)</title><rect x="72.4" y="357" width="0.2" height="15.0" fill="rgb(213,178,9)" rx="2" ry="2" />
+<text text-anchor="" x="75.43" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__queue_work (2 samples, 0.01%)</title><rect x="1187.0" y="277" width="0.1" height="15.0" fill="rgb(217,186,49)" rx="2" ry="2" />
+<text text-anchor="" x="1189.96" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (4 samples, 0.03%)</title><rect x="774.2" y="469" width="0.3" height="15.0" fill="rgb(233,34,46)" rx="2" ry="2" />
+<text text-anchor="" x="777.16" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tick_nohz_idle_exit (3 samples, 0.02%)</title><rect x="1188.9" y="453" width="0.3" height="15.0" fill="rgb(227,48,29)" rx="2" ry="2" />
+<text text-anchor="" x="1191.94" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ibv_cmd_post_send (692 samples, 4.45%)</title><rect x="535.6" y="405" width="52.6" height="15.0" fill="rgb(247,118,2)" rx="2" ry="2" />
+<text text-anchor="" x="538.59" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ibv_c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (3 samples, 0.02%)</title><rect x="71.4" y="293" width="0.2" height="15.0" fill="rgb(232,149,21)" rx="2" ry="2" />
+<text text-anchor="" x="74.37" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_function_call (3 samples, 0.02%)</title><rect x="794.0" y="357" width="0.2" height="15.0" fill="rgb(245,4,32)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__do_softirq (3 samples, 0.02%)</title><rect x="1186.9" y="373" width="0.2" height="15.0" fill="rgb(232,52,6)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_nv030774rm (2 samples, 0.01%)</title><rect x="793.5" y="485" width="0.2" height="15.0" fill="rgb(224,17,2)" rx="2" ry="2" />
+<text text-anchor="" x="796.53" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (110 samples, 0.71%)</title><rect x="62.8" y="261" width="8.3" height="15.0" fill="rgb(220,104,2)" rx="2" ry="2" />
+<text text-anchor="" x="65.79" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>group_sched_in (2 samples, 0.01%)</title><rect x="794.1" y="277" width="0.1" height="15.0" fill="rgb(252,207,20)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZN7MemPool3getEj (5 samples, 0.03%)</title><rect x="542.4" y="389" width="0.3" height="15.0" fill="rgb(213,105,0)" rx="2" ry="2" />
+<text text-anchor="" x="545.35" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZN7MemPool3getEj (2 samples, 0.01%)</title><rect x="12.7" y="469" width="0.1" height="15.0" fill="rgb(243,8,53)" rx="2" ry="2" />
+<text text-anchor="" x="15.66" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_post_send (36 samples, 0.23%)</title><rect x="957.8" y="437" width="2.7" height="15.0" fill="rgb(219,159,18)" rx="2" ry="2" />
+<text text-anchor="" x="960.81" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (75 samples, 0.48%)</title><rect x="64.5" y="181" width="5.7" height="15.0" fill="rgb(244,227,30)" rx="2" ry="2" />
+<text text-anchor="" x="67.46" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_idle (7 samples, 0.05%)</title><rect x="1187.8" y="405" width="0.5" height="15.0" fill="rgb(212,5,1)" rx="2" ry="2" />
+<text text-anchor="" x="1190.80" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_Z15CtrlChannelLoopP11HandlerArgs (4,293 samples, 27.63%)</title><rect x="836.6" y="453" width="326.1" height="15.0" fill="rgb(225,95,10)" rx="2" ry="2" />
+<text text-anchor="" x="839.59" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_Z15CtrlChannelLoopP11HandlerArgs</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_thread (4,293 samples, 27.63%)</title><rect x="836.6" y="469" width="326.1" height="15.0" fill="rgb(210,100,15)" rx="2" ry="2" />
+<text text-anchor="" x="839.59" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >start_thread</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vdso_gettimeofday (20 samples, 0.13%)</title><rect x="104.8" y="389" width="1.5" height="15.0" fill="rgb(238,78,44)" rx="2" ry="2" />
+<text text-anchor="" x="107.79" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>futex_wake (2 samples, 0.01%)</title><rect x="11.2" y="421" width="0.2" height="15.0" fill="rgb(245,166,40)" rx="2" ry="2" />
+<text text-anchor="" x="14.22" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__do_page_fault (3 samples, 0.02%)</title><rect x="61.0" y="389" width="0.3" height="15.0" fill="rgb(230,19,28)" rx="2" ry="2" />
+<text text-anchor="" x="64.04" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_pmu_enable (2 samples, 0.01%)</title><rect x="794.1" y="245" width="0.1" height="15.0" fill="rgb(245,86,49)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ibv_cmd_poll_cq (2 samples, 0.01%)</title><rect x="234.1" y="405" width="0.1" height="15.0" fill="rgb(240,180,50)" rx="2" ry="2" />
+<text text-anchor="" x="237.06" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZNSo6sentryC2ERSo (30 samples, 0.19%)</title><rect x="798.2" y="469" width="2.2" height="15.0" fill="rgb(232,207,10)" rx="2" ry="2" />
+<text text-anchor="" x="801.16" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>remote_function (2 samples, 0.01%)</title><rect x="794.1" y="309" width="0.1" height="15.0" fill="rgb(205,126,28)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__intel_pmu_enable_all.isra.9 (2 samples, 0.01%)</title><rect x="794.1" y="197" width="0.1" height="15.0" fill="rgb(218,102,50)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (2 samples, 0.01%)</title><rect x="71.1" y="261" width="0.2" height="15.0" fill="rgb(238,130,4)" rx="2" ry="2" />
+<text text-anchor="" x="74.14" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (2 samples, 0.01%)</title><rect x="1187.1" y="373" width="0.2" height="15.0" fill="rgb(222,53,27)" rx="2" ry="2" />
+<text text-anchor="" x="1190.11" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock (74 samples, 0.48%)</title><rect x="276.7" y="373" width="5.6" height="15.0" fill="rgb(253,81,53)" rx="2" ry="2" />
+<text text-anchor="" x="279.67" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main.main (2 samples, 0.01%)</title><rect x="10.5" y="453" width="0.2" height="15.0" fill="rgb(231,201,16)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__perf_event_enable (7 samples, 0.05%)</title><rect x="1187.3" y="341" width="0.5" height="15.0" fill="rgb(206,28,16)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_unlock@plt (76 samples, 0.49%)</title><rect x="787.5" y="485" width="5.8" height="15.0" fill="rgb(243,75,31)" rx="2" ry="2" />
+<text text-anchor="" x="790.53" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_start (7,099 samples, 45.69%)</title><rect x="57.2" y="485" width="539.2" height="15.0" fill="rgb(225,141,10)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_start</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>memset (5 samples, 0.03%)</title><rect x="57.2" y="421" width="0.3" height="15.0" fill="rgb(218,33,6)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle_mm_fault (2 samples, 0.01%)</title><rect x="61.0" y="373" width="0.2" height="15.0" fill="rgb(212,173,21)" rx="2" ry="2" />
+<text text-anchor="" x="64.04" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_wakeup (2 samples, 0.01%)</title><rect x="1187.1" y="341" width="0.2" height="15.0" fill="rgb(211,59,15)" rx="2" ry="2" />
+<text text-anchor="" x="1190.11" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (23 samples, 0.15%)</title><rect x="270.6" y="373" width="1.7" height="15.0" fill="rgb(217,56,28)" rx="2" ry="2" />
+<text text-anchor="" x="273.59" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (2 samples, 0.01%)</title><rect x="226.9" y="405" width="0.2" height="15.0" fill="rgb(242,160,13)" rx="2" ry="2" />
+<text text-anchor="" x="229.92" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (55 samples, 0.35%)</title><rect x="65.7" y="149" width="4.2" height="15.0" fill="rgb(248,132,16)" rx="2" ry="2" />
+<text text-anchor="" x="68.67" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_pmu_enable (7 samples, 0.05%)</title><rect x="1187.3" y="293" width="0.5" height="15.0" fill="rgb(207,61,42)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule_preempt_disabled (2 samples, 0.01%)</title><rect x="1188.6" y="453" width="0.2" height="15.0" fill="rgb(212,19,3)" rx="2" ry="2" />
+<text text-anchor="" x="1191.63" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (3 samples, 0.02%)</title><rect x="72.1" y="373" width="0.3" height="15.0" fill="rgb(234,143,1)" rx="2" ry="2" />
+<text text-anchor="" x="75.13" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_page_fault (5 samples, 0.03%)</title><rect x="57.2" y="389" width="0.3" height="15.0" fill="rgb(251,224,29)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (4 samples, 0.03%)</title><rect x="70.8" y="245" width="0.3" height="15.0" fill="rgb(235,20,34)" rx="2" ry="2" />
+<text text-anchor="" x="73.84" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (9 samples, 0.06%)</title><rect x="68.4" y="53" width="0.7" height="15.0" fill="rgb(250,114,43)" rx="2" ry="2" />
+<text text-anchor="" x="71.41" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (138 samples, 0.89%)</title><rect x="61.6" y="373" width="10.5" height="15.0" fill="rgb(237,180,42)" rx="2" ry="2" />
+<text text-anchor="" x="64.65" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_post_send (3 samples, 0.02%)</title><rect x="801.1" y="469" width="0.3" height="15.0" fill="rgb(251,36,49)" rx="2" ry="2" />
+<text text-anchor="" x="804.12" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>remote_function (2 samples, 0.01%)</title><rect x="1189.2" y="309" width="0.2" height="15.0" fill="rgb(222,122,17)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (31 samples, 0.20%)</title><rect x="67.0" y="101" width="2.4" height="15.0" fill="rgb(248,156,23)" rx="2" ry="2" />
+<text text-anchor="" x="70.04" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (117 samples, 0.75%)</title><rect x="62.5" y="293" width="8.9" height="15.0" fill="rgb(254,116,42)" rx="2" ry="2" />
+<text text-anchor="" x="65.48" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[weaver] (5 samples, 0.03%)</title><rect x="1189.6" y="485" width="0.4" height="15.0" fill="rgb(248,72,20)" rx="2" ry="2" />
+<text text-anchor="" x="1192.62" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_cq (1,590 samples, 10.23%)</title><rect x="106.3" y="421" width="120.8" height="15.0" fill="rgb(208,195,7)" rx="2" ry="2" />
+<text text-anchor="" x="109.31" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mlx4_poll_cq</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_cpuidle (20 samples, 0.13%)</title><rect x="1186.9" y="453" width="1.5" height="15.0" fill="rgb(226,91,3)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock (1,291 samples, 8.31%)</title><rect x="960.5" y="437" width="98.1" height="15.0" fill="rgb(225,41,5)" rx="2" ry="2" />
+<text text-anchor="" x="963.55" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pthread_mut..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tick_nohz_restart (2 samples, 0.01%)</title><rect x="1189.0" y="437" width="0.2" height="15.0" fill="rgb(238,87,28)" rx="2" ry="2" />
+<text text-anchor="" x="1192.01" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpuidle_enter_state (8 samples, 0.05%)</title><rect x="1187.8" y="421" width="0.6" height="15.0" fill="rgb(253,16,41)" rx="2" ry="2" />
+<text text-anchor="" x="1190.80" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (131 samples, 0.84%)</title><rect x="62.0" y="341" width="10.0" height="15.0" fill="rgb(227,121,48)" rx="2" ry="2" />
+<text text-anchor="" x="65.03" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reflect.Value.call (2 samples, 0.01%)</title><rect x="10.5" y="373" width="0.2" height="15.0" fill="rgb(244,10,2)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>docker-runc (3 samples, 0.02%)</title><rect x="10.5" y="501" width="0.3" height="15.0" fill="rgb(205,147,0)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__clone (4,293 samples, 27.63%)</title><rect x="836.6" y="485" width="326.1" height="15.0" fill="rgb(225,66,29)" rx="2" ry="2" />
+<text text-anchor="" x="839.59" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__clone</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZN7MemPool3getEj (6 samples, 0.04%)</title><rect x="494.2" y="389" width="0.5" height="15.0" fill="rgb(220,74,3)" rx="2" ry="2" />
+<text text-anchor="" x="497.20" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>post_send_rc_uc (4 samples, 0.03%)</title><rect x="801.4" y="469" width="0.3" height="15.0" fill="rgb(207,24,25)" rx="2" ry="2" />
+<text text-anchor="" x="804.35" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__memcpy_sse2_unaligned (2 samples, 0.01%)</title><rect x="960.4" y="405" width="0.1" height="15.0" fill="rgb(223,102,33)" rx="2" ry="2" />
+<text text-anchor="" x="963.40" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (82 samples, 0.53%)</title><rect x="64.0" y="197" width="6.2" height="15.0" fill="rgb(238,126,42)" rx="2" ry="2" />
+<text text-anchor="" x="67.00" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>getenv (11 samples, 0.07%)</title><rect x="494.7" y="389" width="0.8" height="15.0" fill="rgb(248,7,50)" rx="2" ry="2" />
+<text text-anchor="" x="497.65" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>github.com/containerd/containerd/vendor/google.golang.org/grpc.(*Server).serveStreams.func1.1 (2 samples, 0.01%)</title><rect x="10.4" y="469" width="0.1" height="15.0" fill="rgb(243,159,36)" rx="2" ry="2" />
+<text text-anchor="" x="13.38" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>page_fault (2 samples, 0.01%)</title><rect x="72.4" y="389" width="0.2" height="15.0" fill="rgb(225,204,47)" rx="2" ry="2" />
+<text text-anchor="" x="75.43" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_cq (155 samples, 1.00%)</title><rect x="944.7" y="437" width="11.7" height="15.0" fill="rgb(229,75,50)" rx="2" ry="2" />
+<text text-anchor="" x="947.67" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__schedule (2 samples, 0.01%)</title><rect x="1188.6" y="421" width="0.2" height="15.0" fill="rgb(239,125,5)" rx="2" ry="2" />
+<text text-anchor="" x="1191.63" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (2 samples, 0.01%)</title><rect x="793.3" y="469" width="0.2" height="15.0" fill="rgb(212,222,54)" rx="2" ry="2" />
+<text text-anchor="" x="796.30" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.main (2 samples, 0.01%)</title><rect x="10.5" y="469" width="0.2" height="15.0" fill="rgb(241,36,23)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_sw_cqe (85 samples, 0.55%)</title><rect x="597.3" y="485" width="6.4" height="15.0" fill="rgb(237,109,25)" rx="2" ry="2" />
+<text text-anchor="" x="600.27" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_post_recv (13 samples, 0.08%)</title><rect x="956.8" y="437" width="1.0" height="15.0" fill="rgb(205,134,11)" rx="2" ry="2" />
+<text text-anchor="" x="959.83" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZSt16__ostream_insertIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_PKS3_l@plt (7 samples, 0.05%)</title><rect x="836.1" y="485" width="0.5" height="15.0" fill="rgb(205,5,45)" rx="2" ry="2" />
+<text text-anchor="" x="839.06" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_function_single_interrupt (2 samples, 0.01%)</title><rect x="1189.2" y="373" width="0.2" height="15.0" fill="rgb(206,61,6)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (3 samples, 0.02%)</title><rect x="794.0" y="453" width="0.2" height="15.0" fill="rgb(212,21,9)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vdso_gettimeofday (18 samples, 0.12%)</title><rect x="59.7" y="389" width="1.3" height="15.0" fill="rgb(250,208,6)" rx="2" ry="2" />
+<text text-anchor="" x="62.67" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ibv_cmd_post_recv (582 samples, 3.75%)</title><rect x="486.5" y="405" width="44.2" height="15.0" fill="rgb(208,199,25)" rx="2" ry="2" />
+<text text-anchor="" x="489.45" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ibv_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_sw_cqe (421 samples, 2.71%)</title><rect x="194.9" y="405" width="32.0" height="15.0" fill="rgb(229,110,28)" rx="2" ry="2" />
+<text text-anchor="" x="197.94" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ge..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.call32 (2 samples, 0.01%)</title><rect x="10.5" y="357" width="0.2" height="15.0" fill="rgb(222,116,45)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpuidle_select (3 samples, 0.02%)</title><rect x="1188.4" y="453" width="0.2" height="15.0" fill="rgb(222,194,39)" rx="2" ry="2" />
+<text text-anchor="" x="1191.40" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_pmu_enable_all (2 samples, 0.01%)</title><rect x="1189.2" y="213" width="0.2" height="15.0" fill="rgb(209,28,38)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>page_fault (3 samples, 0.02%)</title><rect x="61.0" y="421" width="0.3" height="15.0" fill="rgb(207,51,14)" rx="2" ry="2" />
+<text text-anchor="" x="64.04" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ib_send_lat (10,294 samples, 66.26%)</title><rect x="11.7" y="501" width="781.8" height="15.0" fill="rgb(226,129,36)" rx="2" ry="2" />
+<text text-anchor="" x="14.67" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ib_send_lat</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_function_single_interrupt (7 samples, 0.05%)</title><rect x="1187.3" y="421" width="0.5" height="15.0" fill="rgb(230,143,25)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_cpuidle (6 samples, 0.04%)</title><rect x="1189.2" y="405" width="0.4" height="15.0" fill="rgb(224,51,12)" rx="2" ry="2" />
+<text text-anchor="" x="1192.16" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>swapper (55 samples, 0.35%)</title><rect x="1185.4" y="501" width="4.2" height="15.0" fill="rgb(244,108,0)" rx="2" ry="2" />
+<text text-anchor="" x="1188.44" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (5 samples, 0.03%)</title><rect x="1186.9" y="405" width="0.4" height="15.0" fill="rgb(244,223,1)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZSt16__ostream_insertIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_PKS3_l (345 samples, 2.22%)</title><rect x="809.9" y="485" width="26.2" height="15.0" fill="rgb(217,118,7)" rx="2" ry="2" />
+<text text-anchor="" x="812.86" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock (2 samples, 0.01%)</title><rect x="49.0" y="469" width="0.1" height="15.0" fill="rgb(211,45,54)" rx="2" ry="2" />
+<text text-anchor="" x="51.96" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (596 samples, 3.84%)</title><rect x="11.8" y="485" width="45.3" height="15.0" fill="rgb(208,94,48)" rx="2" ry="2" />
+<text text-anchor="" x="14.82" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >[unk..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cycles_compare (5 samples, 0.03%)</title><rect x="70.4" y="213" width="0.4" height="15.0" fill="rgb(212,102,2)" rx="2" ry="2" />
+<text text-anchor="" x="73.38" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_64_start_reservations (6 samples, 0.04%)</title><rect x="1189.2" y="469" width="0.4" height="15.0" fill="rgb(254,96,22)" rx="2" ry="2" />
+<text text-anchor="" x="1192.16" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock (6 samples, 0.04%)</title><rect x="48.4" y="469" width="0.4" height="15.0" fill="rgb(225,67,37)" rx="2" ry="2" />
+<text text-anchor="" x="51.36" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_pmu_enable (2 samples, 0.01%)</title><rect x="1189.2" y="245" width="0.2" height="15.0" fill="rgb(247,156,46)" rx="2" ry="2" />
+<text text-anchor="" x="1192.24" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>docker (5 samples, 0.03%)</title><rect x="10.8" y="501" width="0.3" height="15.0" fill="rgb(230,206,16)" rx="2" ry="2" />
+<text text-anchor="" x="13.76" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.scanobject (3 samples, 0.02%)</title><rect x="11.4" y="437" width="0.3" height="15.0" fill="rgb(253,88,51)" rx="2" ry="2" />
+<text text-anchor="" x="14.44" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>weaver (5 samples, 0.03%)</title><rect x="1189.6" y="501" width="0.4" height="15.0" fill="rgb(225,135,32)" rx="2" ry="2" />
+<text text-anchor="" x="1192.62" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_pmu_enable_all (7 samples, 0.05%)</title><rect x="1187.3" y="261" width="0.5" height="15.0" fill="rgb(249,95,22)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_commit_txn (2 samples, 0.01%)</title><rect x="794.1" y="261" width="0.1" height="15.0" fill="rgb(214,37,7)" rx="2" ry="2" />
+<text text-anchor="" x="797.06" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_call_function_single_interrupt (7 samples, 0.05%)</title><rect x="1187.3" y="405" width="0.5" height="15.0" fill="rgb(214,107,22)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ixgbe_service_timer (2 samples, 0.01%)</title><rect x="1187.0" y="325" width="0.1" height="15.0" fill="rgb(205,123,50)" rx="2" ry="2" />
+<text text-anchor="" x="1189.96" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>github.com/containerd/containerd/vendor/google.golang.org/grpc.(*Server).processUnaryRPC (2 samples, 0.01%)</title><rect x="10.4" y="437" width="0.1" height="15.0" fill="rgb(220,179,37)" rx="2" ry="2" />
+<text text-anchor="" x="13.38" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (3 samples, 0.02%)</title><rect x="774.2" y="405" width="0.3" height="15.0" fill="rgb(218,173,9)" rx="2" ry="2" />
+<text text-anchor="" x="777.24" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (87 samples, 0.56%)</title><rect x="63.8" y="213" width="6.6" height="15.0" fill="rgb(205,70,6)" rx="2" ry="2" />
+<text text-anchor="" x="66.77" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (11 samples, 0.07%)</title><rect x="596.4" y="469" width="0.8" height="15.0" fill="rgb(248,27,35)" rx="2" ry="2" />
+<text text-anchor="" x="599.35" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_lock (9 samples, 0.06%)</title><rect x="543.3" y="389" width="0.7" height="15.0" fill="rgb(235,46,24)" rx="2" ry="2" />
+<text text-anchor="" x="546.34" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (3 samples, 0.02%)</title><rect x="596.1" y="405" width="0.3" height="15.0" fill="rgb(211,186,15)" rx="2" ry="2" />
+<text text-anchor="" x="599.13" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gcBgMarkWorker.func2 (3 samples, 0.02%)</title><rect x="11.4" y="469" width="0.3" height="15.0" fill="rgb(240,194,45)" rx="2" ry="2" />
+<text text-anchor="" x="14.44" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (4 samples, 0.03%)</title><rect x="49.4" y="469" width="0.3" height="15.0" fill="rgb(243,56,24)" rx="2" ry="2" />
+<text text-anchor="" x="52.42" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (2 samples, 0.01%)</title><rect x="10.5" y="485" width="0.2" height="15.0" fill="rgb(237,115,4)" rx="2" ry="2" />
+<text text-anchor="" x="13.53" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_unlock (77 samples, 0.50%)</title><rect x="781.7" y="485" width="5.8" height="15.0" fill="rgb(220,34,25)" rx="2" ry="2" />
+<text text-anchor="" x="784.68" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock (127 samples, 0.82%)</title><rect x="1175.4" y="485" width="9.7" height="15.0" fill="rgb(241,194,32)" rx="2" ry="2" />
+<text text-anchor="" x="1178.42" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>getenv (13 samples, 0.08%)</title><rect x="12.9" y="469" width="1.0" height="15.0" fill="rgb(236,110,14)" rx="2" ry="2" />
+<text text-anchor="" x="15.89" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock (352 samples, 2.27%)</title><rect x="282.3" y="373" width="26.7" height="15.0" fill="rgb(237,176,24)" rx="2" ry="2" />
+<text text-anchor="" x="285.29" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_ioctl (3 samples, 0.02%)</title><rect x="794.0" y="405" width="0.2" height="15.0" fill="rgb(254,13,46)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>irq_exit (3 samples, 0.02%)</title><rect x="1186.9" y="389" width="0.2" height="15.0" fill="rgb(254,16,13)" rx="2" ry="2" />
+<text text-anchor="" x="1189.89" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_post_recv (3 samples, 0.02%)</title><rect x="1163.6" y="485" width="0.2" height="15.0" fill="rgb(231,27,14)" rx="2" ry="2" />
+<text text-anchor="" x="1166.57" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock (105 samples, 0.68%)</title><rect x="588.2" y="405" width="7.9" height="15.0" fill="rgb(206,139,31)" rx="2" ry="2" />
+<text text-anchor="" x="591.15" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_startup_entry (6 samples, 0.04%)</title><rect x="1189.2" y="421" width="0.4" height="15.0" fill="rgb(253,95,10)" rx="2" ry="2" />
+<text text-anchor="" x="1192.16" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_cpu_mhz (20 samples, 0.13%)</title><rect x="59.5" y="421" width="1.5" height="15.0" fill="rgb(210,169,18)" rx="2" ry="2" />
+<text text-anchor="" x="62.52" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (2 samples, 0.01%)</title><rect x="793.3" y="485" width="0.2" height="15.0" fill="rgb(206,21,47)" rx="2" ry="2" />
+<text text-anchor="" x="796.30" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_vfs_ioctl (3 samples, 0.02%)</title><rect x="794.0" y="421" width="0.2" height="15.0" fill="rgb(236,144,50)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_cpu_mhz (23 samples, 0.15%)</title><rect x="104.6" y="421" width="1.7" height="15.0" fill="rgb(231,139,40)" rx="2" ry="2" />
+<text text-anchor="" x="107.56" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock@plt (2 samples, 0.01%)</title><rect x="804.8" y="469" width="0.2" height="15.0" fill="rgb(244,182,22)" rx="2" ry="2" />
+<text text-anchor="" x="807.84" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_post_recv (649 samples, 4.18%)</title><rect x="486.1" y="421" width="49.3" height="15.0" fill="rgb(217,37,12)" rx="2" ry="2" />
+<text text-anchor="" x="489.07" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mlx4..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>menu_select (2 samples, 0.01%)</title><rect x="1188.5" y="437" width="0.1" height="15.0" fill="rgb(224,180,27)" rx="2" ry="2" />
+<text text-anchor="" x="1191.48" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (14 samples, 0.09%)</title><rect x="1185.8" y="485" width="1.1" height="15.0" fill="rgb(254,115,43)" rx="2" ry="2" />
+<text text-anchor="" x="1188.82" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_futex (2 samples, 0.01%)</title><rect x="1189.8" y="437" width="0.2" height="15.0" fill="rgb(221,198,11)" rx="2" ry="2" />
+<text text-anchor="" x="1192.85" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ibv_cmd_poll_cq (3,294 samples, 21.20%)</title><rect x="235.4" y="389" width="250.2" height="15.0" fill="rgb(223,5,38)" rx="2" ry="2" />
+<text text-anchor="" x="238.43" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ibv_cmd_poll_cq</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>docker-containe (7 samples, 0.05%)</title><rect x="10.0" y="501" width="0.5" height="15.0" fill="rgb(230,42,53)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>dockerd (7 samples, 0.05%)</title><rect x="11.1" y="501" width="0.6" height="15.0" fill="rgb(225,108,15)" rx="2" ry="2" />
+<text text-anchor="" x="14.14" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_cq (442 samples, 2.85%)</title><rect x="14.8" y="469" width="33.6" height="15.0" fill="rgb(224,28,49)" rx="2" ry="2" />
+<text text-anchor="" x="17.79" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ml..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (3 samples, 0.02%)</title><rect x="774.2" y="421" width="0.3" height="15.0" fill="rgb(230,170,29)" rx="2" ry="2" />
+<text text-anchor="" x="777.24" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (9 samples, 0.06%)</title><rect x="12.0" y="469" width="0.7" height="15.0" fill="rgb(231,14,18)" rx="2" ry="2" />
+<text text-anchor="" x="14.97" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tick_sched_handle.isra.15 (2 samples, 0.01%)</title><rect x="774.3" y="373" width="0.2" height="15.0" fill="rgb(241,34,9)" rx="2" ry="2" />
+<text text-anchor="" x="777.31" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (2 samples, 0.01%)</title><rect x="535.2" y="405" width="0.2" height="15.0" fill="rgb(226,37,0)" rx="2" ry="2" />
+<text text-anchor="" x="538.21" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (139 samples, 0.89%)</title><rect x="794.5" y="485" width="10.6" height="15.0" fill="rgb(217,83,30)" rx="2" ry="2" />
+<text text-anchor="" x="797.51" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle_mm_fault (2 samples, 0.01%)</title><rect x="72.4" y="341" width="0.2" height="15.0" fill="rgb(211,37,7)" rx="2" ry="2" />
+<text text-anchor="" x="75.43" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_ioctl (3 samples, 0.02%)</title><rect x="794.0" y="437" width="0.2" height="15.0" fill="rgb(210,215,25)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (115 samples, 0.74%)</title><rect x="62.6" y="277" width="8.7" height="15.0" fill="rgb(205,7,20)" rx="2" ry="2" />
+<text text-anchor="" x="65.56" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>getenv (55 samples, 0.35%)</title><rect x="272.5" y="373" width="4.2" height="15.0" fill="rgb(205,120,11)" rx="2" ry="2" />
+<text text-anchor="" x="275.49" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_Z15CtrlChannelLoopP11HandlerArgs (48 samples, 0.31%)</title><rect x="794.5" y="469" width="3.7" height="15.0" fill="rgb(224,85,44)" rx="2" ry="2" />
+<text text-anchor="" x="797.51" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>rest_init (6 samples, 0.04%)</title><rect x="1189.2" y="437" width="0.4" height="15.0" fill="rgb(232,129,23)" rx="2" ry="2" />
+<text text-anchor="" x="1192.16" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strlen (5 samples, 0.03%)</title><rect x="495.1" y="373" width="0.4" height="15.0" fill="rgb(211,10,49)" rx="2" ry="2" />
+<text text-anchor="" x="498.11" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock (1,370 samples, 8.82%)</title><rect x="1058.6" y="437" width="104.1" height="15.0" fill="rgb(248,173,34)" rx="2" ry="2" />
+<text text-anchor="" x="1061.60" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pthread_mute..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_bf_copy (5 samples, 0.03%)</title><rect x="959.0" y="421" width="0.4" height="15.0" fill="rgb(254,130,8)" rx="2" ry="2" />
+<text text-anchor="" x="962.03" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mlx4_poll_ibv_cq (3,410 samples, 21.95%)</title><rect x="227.1" y="421" width="259.0" height="15.0" fill="rgb(253,28,27)" rx="2" ry="2" />
+<text text-anchor="" x="230.07" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >mlx4_poll_ibv_cq</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ibv_cmd_poll_cq@plt (4 samples, 0.03%)</title><rect x="14.0" y="469" width="0.3" height="15.0" fill="rgb(247,225,18)" rx="2" ry="2" />
+<text text-anchor="" x="17.03" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sample_get_cpu_mhz (20 samples, 0.13%)</title><rect x="59.5" y="405" width="1.5" height="15.0" fill="rgb(248,139,2)" rx="2" ry="2" />
+<text text-anchor="" x="62.52" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock@plt (43 samples, 0.28%)</title><rect x="1172.2" y="485" width="3.2" height="15.0" fill="rgb(241,102,12)" rx="2" ry="2" />
+<text text-anchor="" x="1175.15" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_futex (3 samples, 0.02%)</title><rect x="11.1" y="453" width="0.3" height="15.0" fill="rgb(218,174,16)" rx="2" ry="2" />
+<text text-anchor="" x="14.14" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock@plt (2 samples, 0.01%)</title><rect x="1185.1" y="485" width="0.1" height="15.0" fill="rgb(222,215,33)" rx="2" ry="2" />
+<text text-anchor="" x="1188.06" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libc-2.19.so] (67 samples, 0.43%)</title><rect x="65.0" y="165" width="5.1" height="15.0" fill="rgb(222,218,37)" rx="2" ry="2" />
+<text text-anchor="" x="67.99" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>memcpy@plt (4 samples, 0.03%)</title><rect x="14.5" y="469" width="0.3" height="15.0" fill="rgb(241,183,23)" rx="2" ry="2" />
+<text text-anchor="" x="17.48" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (2,325 samples, 14.97%)</title><rect x="309.0" y="373" width="176.6" height="15.0" fill="rgb(226,127,54)" rx="2" ry="2" />
+<text text-anchor="" x="312.03" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >request_router_shm</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>call_timer_fn (2 samples, 0.01%)</title><rect x="1187.0" y="341" width="0.1" height="15.0" fill="rgb(233,115,44)" rx="2" ry="2" />
+<text text-anchor="" x="1189.96" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>getenv@plt (2 samples, 0.01%)</title><rect x="13.9" y="469" width="0.1" height="15.0" fill="rgb(213,67,20)" rx="2" ry="2" />
+<text text-anchor="" x="16.87" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>free (2 samples, 0.01%)</title><rect x="272.3" y="373" width="0.2" height="15.0" fill="rgb(232,95,9)" rx="2" ry="2" />
+<text text-anchor="" x="275.34" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>router (5,147 samples, 33.13%)</title><rect x="794.5" y="501" width="390.9" height="15.0" fill="rgb(213,227,24)" rx="2" ry="2" />
+<text text-anchor="" x="797.51" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >router</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (6 samples, 0.04%)</title><rect x="1187.3" y="229" width="0.5" height="15.0" fill="rgb(243,32,23)" rx="2" ry="2" />
+<text text-anchor="" x="1190.34" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>page_fault (5 samples, 0.03%)</title><rect x="57.2" y="405" width="0.3" height="15.0" fill="rgb(205,128,18)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>remote_function (7 samples, 0.05%)</title><rect x="1187.3" y="357" width="0.5" height="15.0" fill="rgb(221,171,9)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>request_router_shm (6 samples, 0.04%)</title><rect x="485.6" y="389" width="0.5" height="15.0" fill="rgb(251,177,42)" rx="2" ry="2" />
+<text text-anchor="" x="488.62" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__intel_pmu_enable_all.isra.9 (7 samples, 0.05%)</title><rect x="1187.3" y="245" width="0.5" height="15.0" fill="rgb(232,110,6)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_perf_event_enable (3 samples, 0.02%)</title><rect x="794.0" y="373" width="0.2" height="15.0" fill="rgb(209,163,33)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_commit_txn (7 samples, 0.05%)</title><rect x="1187.3" y="309" width="0.5" height="15.0" fill="rgb(237,190,47)" rx="2" ry="2" />
+<text text-anchor="" x="1190.27" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_event_for_each_child (3 samples, 0.02%)</title><rect x="794.0" y="389" width="0.2" height="15.0" fill="rgb(252,41,49)" rx="2" ry="2" />
+<text text-anchor="" x="796.98" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_mutex_unlock@plt (2 samples, 0.01%)</title><rect x="49.1" y="469" width="0.2" height="15.0" fill="rgb(224,184,17)" rx="2" ry="2" />
+<text text-anchor="" x="52.12" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clear_page_c_e (3 samples, 0.02%)</title><rect x="57.2" y="309" width="0.2" height="15.0" fill="rgb(245,141,53)" rx="2" ry="2" />
+<text text-anchor="" x="60.17" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sample_get_cpu_mhz (23 samples, 0.15%)</title><rect x="104.6" y="405" width="1.7" height="15.0" fill="rgb(234,155,14)" rx="2" ry="2" />
+<text text-anchor="" x="107.56" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pthread_spin_lock (2,242 samples, 14.43%)</title><rect x="604.2" y="485" width="170.3" height="15.0" fill="rgb(206,64,3)" rx="2" ry="2" />
+<text text-anchor="" x="607.18" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pthread_spin_lock</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strlen (25 samples, 0.16%)</title><rect x="274.8" y="357" width="1.9" height="15.0" fill="rgb(220,206,54)" rx="2" ry="2" />
+<text text-anchor="" x="277.77" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (2 samples, 0.01%)</title><rect x="1187.1" y="357" width="0.2" height="15.0" fill="rgb(238,191,53)" rx="2" ry="2" />
+<text text-anchor="" x="1190.11" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>print_report_lat (198 samples, 1.27%)</title><rect x="57.5" y="437" width="15.1" height="15.0" fill="rgb(245,197,31)" rx="2" ry="2" />
+<text text-anchor="" x="60.55" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>

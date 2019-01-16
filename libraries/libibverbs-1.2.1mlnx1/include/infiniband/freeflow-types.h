@@ -23,6 +23,7 @@
 #define MAP_SIZE 10240
 #define WR_QUEUE_SIZE 102400
 #define PRINT_LOG 0
+//#define PRINT_LOG 1
 #define PARALLEL_SIZE 10
 
 typedef enum RDMA_FUNCTION_CALL

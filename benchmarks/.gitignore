@@ -1,0 +1,10 @@
+*.tar
+*.out
+*.tgz
+FlameGraph/
+*.perf
+perf.data*
+out.*
+oprofile_data/
+sysstat/
+ipc-bench/
