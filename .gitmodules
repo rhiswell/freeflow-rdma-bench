@@ -4,3 +4,6 @@
 [submodule "benchmarks/ipc-bench"]
 	path = benchmarks/ipc-bench
 	url = https://github.com/rhiswell/ipc-bench
+[submodule "rdma-tutorial"]
+	path = rdma-tutorial
+	url = git@github.com:rhiswell/rdma-tutorial.git
