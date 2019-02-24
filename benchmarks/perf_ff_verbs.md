@@ -1176,7 +1176,7 @@ Host Verbs 包括控制路径和数据路径（见图 2a）。控制路径上主
 
 P.S. 若应用每次发送数据前都需要注册新 buffer，则 `ibv_reg_mr` 的开销将成为热点。因为每次注册 `ibv_reg_mr` 会在重映射 buffer 后广播更新所有 FFR 上相关的地址转换表项。
 
-**Q1.** 相比主机 Verbs，FreeFlow Verbs 的吞吐率随着包长k的变化情况为什么会推后？
+**Q1.** 相比主机 Verbs，FreeFlow Verbs 的吞吐率随着包长的变化情况为什么会推后？
 
 一般，throughput 定义如下：
 $$
@@ -1478,7 +1478,7 @@ $ cpufreq-info -mf
 
 ```bash
 for t in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-	echo -n "performance" > $
+	echo -n "performance" > $t
 done
 ```
 
@@ -1628,7 +1628,7 @@ gcc -fno-omit-frame-pointer $^ -o $@
 # Default size of the stack dump is 8192 (bytes). User can change the size by 
 # passing the size after comma like "--call-graph dwarf,4096".
 
-# Ubuntu 上，库有专用的 debug symbol 包，其路径在 /usr/lib/*
+# Ubuntu 上，库有专用的 debug symbol 包，其路径在 /usr/lib/debug/*
 # 1. 添加 repo
 # 2. Import the debug symbol archive signing key
 sudo apt-key adv --keyserver keyserver.ubuntu.com \
@@ -1643,6 +1643,8 @@ Refs:
 
 - Debug Symbol Packages. https://wiki.ubuntu.com/Debug%20Symbol%20Packages.
 - How can I get perf to find symbols in my program. https://stackoverflow.com/questions/10933408/how-can-i-get-perf-to-find-symbols-in-my-program.
+- 深入理解 debuginfo. https://blog.csdn.net/chinainvent/article/details/24129311.
 
 ### Tools to profile networking performance
 
+TODO
